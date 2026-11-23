@@ -1,0 +1,6 @@
+{
+  "name": "富创通 IST 配网助手",
+  "description": "富创通（IST）商显设备本地 NFC 配网调试工具，支持读取 FM11NT083C 芯片 UID 绑定设备及写入明文 NDEF Wi-Fi 配网信息。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

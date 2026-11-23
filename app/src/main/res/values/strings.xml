@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">富创通 IST 配网助手</string>
+    <string name="app_subtitle">IST 商显 NFC 本地调试工具</string>
+    <string name="tab_devices">设备列表</string>
+    <string name="tab_logs">读写日志</string>
+    <string name="tab_guide">调试说明</string>
+    <string name="action_scan_bind">刷 NFC 绑定</string>
+</resources>
