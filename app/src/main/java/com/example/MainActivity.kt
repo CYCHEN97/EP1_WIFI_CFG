@@ -26,11 +26,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ListAlt
 import androidx.compose.material.icons.automirrored.outlined.ListAlt
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.DeveloperBoard
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Nfc
 import androidx.compose.material.icons.filled.WarningAmber
+import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.MenuBook
 import androidx.compose.material3.Button
@@ -73,6 +75,7 @@ import com.example.ui.components.ProvisionDeviceDialog
 import com.example.ui.screens.DevicesScreen
 import com.example.ui.screens.GuideScreen
 import com.example.ui.screens.LogsScreen
+import com.example.ui.screens.QuickProvisionScreen
 import com.example.ui.screens.TagInspectorScreen
 import com.example.ui.theme.AlertRed
 import com.example.ui.theme.AlertRedBg
@@ -123,6 +126,7 @@ fun ProvisionerApp(viewModel: ProvisionerViewModel) {
     val bindDialogState by viewModel.bindDialog.collectAsStateWithLifecycle()
     val provisionDialogState by viewModel.provisionDialog.collectAsStateWithLifecycle()
     val tagInspectorState by viewModel.tagInspector.collectAsStateWithLifecycle()
+    val quickProvisionState by viewModel.quickProvision.collectAsStateWithLifecycle()
     val snackbarMessage by viewModel.snackbarMessage.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -254,6 +258,7 @@ fun ProvisionerApp(viewModel: ProvisionerViewModel) {
                         val selected = activeTab == tab
                         val icon = when (tab) {
                             AppTab.DEVICES -> if (selected) Icons.Filled.Devices else Icons.Outlined.Devices
+                            AppTab.QUICK_PROVISION -> if (selected) Icons.Filled.Bolt else Icons.Outlined.Bolt
                             AppTab.READ_TAG -> Icons.Filled.Nfc
                             AppTab.LOGS -> if (selected) Icons.AutoMirrored.Filled.ListAlt else Icons.AutoMirrored.Outlined.ListAlt
                             AppTab.GUIDE -> if (selected) Icons.Filled.MenuBook else Icons.Outlined.MenuBook
@@ -270,7 +275,10 @@ fun ProvisionerApp(viewModel: ProvisionerViewModel) {
                             label = {
                                 Text(
                                     text = tab.label,
-                                    style = MaterialTheme.typography.labelMedium
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             },
                             colors = NavigationBarItemDefaults.colors(
@@ -308,6 +316,28 @@ fun ProvisionerApp(viewModel: ProvisionerViewModel) {
                         onCopyUid = { uid ->
                             viewModel.showMessage("已复制 UID: $uid")
                         }
+                    )
+                }
+
+                AppTab.QUICK_PROVISION -> {
+                    QuickProvisionScreen(
+                        state = quickProvisionState,
+                        nfcAvailability = nfcAvailability,
+                        isModalBlockingNfc = bindDialogState.isOpen || provisionDialogState.isOpen,
+                        findDuplicateByUid = viewModel::findDuplicateDeviceByUid,
+                        onNameChange = viewModel::updateQuickProvisionName,
+                        onSsidChange = viewModel::updateQuickProvisionSsid,
+                        onPasswordChange = viewModel::updateQuickProvisionPassword,
+                        onFormatChange = viewModel::updateQuickProvisionFormat,
+                        onOverwriteChange = viewModel::updateQuickProvisionOverwrite,
+                        onStartTap = viewModel::startQuickProvisionTap,
+                        onBackToForm = viewModel::backToQuickProvisionForm,
+                        onDuplicateBlocked = viewModel::onQuickProvisionDuplicateBlocked,
+                        onWriteResult = viewModel::onQuickProvisionWriteResult,
+                        onContinueNext = viewModel::continueNextQuickProvision,
+                        onGoToDevices = { viewModel.selectTab(AppTab.DEVICES) },
+                        onOpenNfcSettings = { NfcHelper.openNfcSettings(context) },
+                        onCopyFeedback = viewModel::showMessage
                     )
                 }
 

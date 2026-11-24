@@ -16,6 +16,8 @@ import com.example.model.PayloadBuilder
 import com.example.model.ProvisionDialogState
 import com.example.model.ProvisionStatus
 import com.example.model.ProvisionStep
+import com.example.model.QuickProvisionState
+import com.example.model.QuickProvisionStep
 import com.example.model.TagInspectorState
 import com.example.nfc.NfcClearResult
 import com.example.nfc.NfcHelper
@@ -69,6 +71,11 @@ class ProvisionerViewModel(
 
     private val _tagInspector = MutableStateFlow(TagInspectorState())
     val tagInspector: StateFlow<TagInspectorState> = _tagInspector.asStateFlow()
+
+    private val _quickProvision = MutableStateFlow(
+        QuickProvisionState(format = _preferredFormat.value)
+    )
+    val quickProvision: StateFlow<QuickProvisionState> = _quickProvision.asStateFlow()
 
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
@@ -326,6 +333,9 @@ class ProvisionerViewModel(
         repository.savePreferredFormat(format)
         _provisionDialog.update {
             it.copy(format = format, writeError = null)
+        }
+        _quickProvision.update {
+            if (it.step == QuickProvisionStep.FORM) it.copy(format = format, writeError = null) else it
         }
     }
 
@@ -761,6 +771,292 @@ class ProvisionerViewModel(
             uidByteCount = byteCount,
             duplicateDeviceName = existing?.name
         )
+    }
+
+    // --- One-Shot Quick Bind & Provision Flow ---
+
+    fun updateQuickProvisionName(name: String) {
+        _quickProvision.update {
+            it.copy(deviceName = name, nameError = null, writeError = null)
+        }
+    }
+
+    fun updateQuickProvisionSsid(ssid: String) {
+        _quickProvision.update {
+            it.copy(ssid = ssid, ssidError = null, writeError = null)
+        }
+    }
+
+    fun updateQuickProvisionPassword(password: String) {
+        _quickProvision.update {
+            it.copy(password = password, passwordError = null, writeError = null)
+        }
+    }
+
+    fun updateQuickProvisionFormat(format: NdefPayloadFormat) {
+        _preferredFormat.value = format
+        repository.savePreferredFormat(format)
+        _quickProvision.update {
+            it.copy(format = format, writeError = null)
+        }
+    }
+
+    fun updateQuickProvisionOverwrite(overwrite: Boolean) {
+        _quickProvision.update {
+            it.copy(overwriteExisting = overwrite, writeError = null)
+        }
+    }
+
+    fun startQuickProvisionTap() {
+        val state = _quickProvision.value
+        val trimmedName = state.deviceName.trim()
+        val trimmedSsid = state.ssid.trim()
+        var nameErr: String? = null
+        var ssidErr: String? = null
+        var pwdErr: String? = null
+
+        if (trimmedName.isEmpty()) {
+            nameErr = "请输入设备名称"
+        }
+        if (trimmedSsid.isEmpty()) {
+            ssidErr = "请输入 Wi-Fi 名称 (SSID)"
+        }
+        if (state.password.isNotEmpty() && state.password.length < 8) {
+            pwdErr = "Wi-Fi 密码至少需要 8 位字符（无密码开放网络可留空）"
+        }
+
+        if (nameErr != null || ssidErr != null || pwdErr != null) {
+            _quickProvision.update {
+                it.copy(nameError = nameErr, ssidError = ssidErr, passwordError = pwdErr)
+            }
+            return
+        }
+
+        val samplePayload = PayloadBuilder.buildPayload(
+            format = state.format,
+            ssid = trimmedSsid,
+            password = state.password,
+            uid = "04:E2:8A:19:4C:72:01"
+        )
+        val footprint = PayloadBuilder.calculateFootprint(samplePayload)
+        if (!footprint.isWithinCapacity) {
+            _quickProvision.update {
+                it.copy(
+                    writeError = "报文占用 (${footprint.eepromUsedBytes} B) 超出 FM11NT083C 888 Bytes 用户区上限，请缩短输入或切换格式"
+                )
+            }
+            return
+        }
+
+        _quickProvision.update {
+            it.copy(
+                deviceName = trimmedName,
+                ssid = trimmedSsid,
+                step = QuickProvisionStep.WAITING_TAP,
+                nameError = null,
+                ssidError = null,
+                passwordError = null,
+                writeError = null
+            )
+        }
+    }
+
+    fun backToQuickProvisionForm() {
+        _quickProvision.update {
+            it.copy(
+                step = QuickProvisionStep.FORM,
+                writeError = null
+            )
+        }
+    }
+
+    fun continueNextQuickProvision() {
+        _quickProvision.update { state ->
+            QuickProvisionState(
+                deviceName = "",
+                ssid = state.ssid,
+                password = state.password,
+                format = state.format,
+                overwriteExisting = state.overwriteExisting,
+                step = QuickProvisionStep.FORM
+            )
+        }
+    }
+
+    fun findDuplicateDeviceByUid(uid: String): BoundDevice? {
+        if (uid.isBlank()) return null
+        return _devices.value.firstOrNull { it.uid.equals(uid, ignoreCase = true) }
+    }
+
+    fun onQuickProvisionDuplicateBlocked(scannedUid: String, existingDeviceName: String) {
+        val state = _quickProvision.value
+        if (state.step != QuickProvisionStep.WAITING_TAP) return
+        val now = System.currentTimeMillis()
+        val msg = "该 NFC 芯片 ($scannedUid) 已绑定设备「$existingDeviceName」。如需覆盖重配，请返回开启「已绑定 UID 直接覆盖重配」"
+        appendLog(
+            NfcLogEntry(
+                id = UUID.randomUUID().toString(),
+                timestamp = now,
+                type = NfcLogType.ERROR,
+                uid = scannedUid,
+                deviceName = existingDeviceName,
+                summary = "一键配网拦截：UID $scannedUid 已绑定「$existingDeviceName」",
+                isSuccess = false
+            )
+        )
+        _quickProvision.update {
+            it.copy(writeError = msg)
+        }
+    }
+
+    fun onQuickProvisionWriteResult(result: NfcWriteResult) {
+        val state = _quickProvision.value
+        if (state.step != QuickProvisionStep.WAITING_TAP) return
+
+        val now = System.currentTimeMillis()
+        val targetName = state.deviceName.trim()
+        val targetSsid = state.ssid.trim()
+
+        when (result) {
+            is NfcWriteResult.Success -> {
+                val existing = _devices.value.firstOrNull {
+                    it.uid.equals(result.uid, ignoreCase = true)
+                }
+                if (existing != null && !state.overwriteExisting) {
+                    onQuickProvisionDuplicateBlocked(result.uid, existing.name)
+                    return
+                }
+
+                val isExistingUpdated = existing != null
+                val savedDevice: BoundDevice
+                val updatedDevices: List<BoundDevice>
+
+                if (existing != null) {
+                    savedDevice = existing.copy(
+                        name = targetName.ifEmpty { existing.name },
+                        status = ProvisionStatus.PROVISIONED,
+                        wifiSsid = targetSsid,
+                        wifiPassword = state.password,
+                        provisionedAt = now
+                    )
+                    updatedDevices = _devices.value.map { item ->
+                        if (item.id == existing.id) savedDevice else item
+                    }
+                } else {
+                    savedDevice = BoundDevice(
+                        id = UUID.randomUUID().toString(),
+                        uid = result.uid,
+                        name = targetName,
+                        boundAt = now,
+                        status = ProvisionStatus.PROVISIONED,
+                        wifiSsid = targetSsid,
+                        wifiPassword = state.password,
+                        provisionedAt = now
+                    )
+                    updatedDevices = listOf(savedDevice) + _devices.value
+                }
+
+                _devices.value = updatedDevices
+                repository.saveDevices(updatedDevices)
+
+                if (!isExistingUpdated) {
+                    val uidByteCount = result.uid.split(":").count { it.isNotBlank() }
+                    val (bindHex, bindAscii) = NfcHelper.buildBindLogHexAndAscii(result.uid, uidByteCount)
+                    appendLog(
+                        NfcLogEntry(
+                            id = UUID.randomUUID().toString(),
+                            timestamp = now,
+                            type = NfcLogType.READ_UID,
+                            uid = result.uid,
+                            deviceName = savedDevice.name,
+                            summary = "一键配网读取 UID ($uidByteCount B) 并绑定设备「${savedDevice.name}」",
+                            payload = "UID=${result.uid}",
+                            byteCount = uidByteCount,
+                            isSuccess = true,
+                            hexData = bindHex,
+                            asciiData = bindAscii
+                        )
+                    )
+                }
+
+                val (writeHex, writeAscii) = NfcHelper.buildWriteLogHexAndAscii(
+                    uid = result.uid,
+                    payload = result.payload,
+                    ndefMessageBytes = result.rawNdefBytes
+                )
+                appendLog(
+                    NfcLogEntry(
+                        id = UUID.randomUUID().toString(),
+                        timestamp = now,
+                        type = NfcLogType.WRITE_WIFI,
+                        uid = result.uid,
+                        deviceName = savedDevice.name,
+                        summary = if (isExistingUpdated) {
+                            "一键覆盖更新「${savedDevice.name}」并写入 Wi-Fi「$targetSsid」(${state.format.label})"
+                        } else {
+                            "一键绑定并写入 Wi-Fi「$targetSsid」成功 (${state.format.label})"
+                        },
+                        payload = result.payload,
+                        byteCount = result.ndefMessageBytes,
+                        isSuccess = true,
+                        hexData = writeHex,
+                        asciiData = writeAscii
+                    )
+                )
+
+                _quickProvision.update {
+                    it.copy(
+                        step = QuickProvisionStep.SUCCESS,
+                        writeError = null,
+                        lastBoundDevice = savedDevice,
+                        writtenPayload = result.payload,
+                        writtenByteCount = result.ndefMessageBytes,
+                        isExistingUpdated = isExistingUpdated
+                    )
+                }
+                _snackbarMessage.value = if (isExistingUpdated) {
+                    "已覆盖更新并配网「${savedDevice.name}」"
+                } else {
+                    "已一键绑定并配网「${savedDevice.name}」"
+                }
+            }
+
+            is NfcWriteResult.Failure -> {
+                val errUid = result.scannedUid
+                val attemptedPayload = if (!errUid.isNullOrBlank()) {
+                    PayloadBuilder.buildPayload(
+                        format = state.format,
+                        ssid = targetSsid,
+                        password = state.password,
+                        uid = errUid
+                    )
+                } else {
+                    null
+                }
+                val (errHex, errAscii) = if (!errUid.isNullOrBlank() && !attemptedPayload.isNullOrBlank()) {
+                    NfcHelper.buildWriteLogHexAndAscii(uid = errUid, payload = attemptedPayload)
+                } else {
+                    null to null
+                }
+                appendLog(
+                    NfcLogEntry(
+                        id = UUID.randomUUID().toString(),
+                        timestamp = now,
+                        type = NfcLogType.ERROR,
+                        uid = errUid,
+                        deviceName = targetName.ifEmpty { null },
+                        summary = "一键配网失败：${result.message}",
+                        payload = attemptedPayload,
+                        isSuccess = false,
+                        hexData = errHex,
+                        asciiData = errAscii
+                    )
+                )
+                _quickProvision.update {
+                    it.copy(writeError = result.message)
+                }
+            }
+        }
     }
 
     // --- Logs ---

@@ -9,6 +9,7 @@ const val IST_VENDOR_NAME = "IST"
 
 enum class AppTab(val label: String) {
     DEVICES("设备列表"),
+    QUICK_PROVISION("一键配网"),
     READ_TAG("读卡调试"),
     LOGS("读写日志"),
     GUIDE("调试说明")
@@ -219,6 +220,29 @@ data class ProvisionDialogState(
 ) {
     val isOpen: Boolean get() = device != null
 }
+
+enum class QuickProvisionStep {
+    FORM,
+    WAITING_TAP,
+    SUCCESS
+}
+
+data class QuickProvisionState(
+    val deviceName: String = "",
+    val ssid: String = "",
+    val password: String = "",
+    val format: NdefPayloadFormat = NdefPayloadFormat.JSON,
+    val overwriteExisting: Boolean = false,
+    val step: QuickProvisionStep = QuickProvisionStep.FORM,
+    val nameError: String? = null,
+    val ssidError: String? = null,
+    val passwordError: String? = null,
+    val writeError: String? = null,
+    val lastBoundDevice: BoundDevice? = null,
+    val writtenPayload: String = "",
+    val writtenByteCount: Int = 0,
+    val isExistingUpdated: Boolean = false
+)
 
 data class ScannedWifiNetwork(
     val ssid: String,

@@ -7,6 +7,7 @@ import com.example.model.NdefPayloadFormat
 import com.example.model.NfcLogType
 import com.example.model.ProvisionStatus
 import com.example.model.ProvisionStep
+import com.example.model.QuickProvisionStep
 import com.example.nfc.NfcWriteResult
 import com.example.viewmodel.ProvisionerViewModel
 import org.junit.Assert.assertEquals
@@ -238,5 +239,109 @@ class ExampleRobolectricTest {
         )
         assertTrue(!vm2.tagInspector.value.isEraseMode)
         assertNotNull(vm2.tagInspector.value.lastClearMessage)
+    }
+
+    @Test
+    fun `quick provision validates inputs, handles duplicate policy, persists device and logs, and supports batch next`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val vm1 = ProvisionerViewModel(ProvisioningRepository(context))
+
+        // 1. Validation checks
+        vm1.updateQuickProvisionName(" ")
+        vm1.updateQuickProvisionSsid("")
+        vm1.updateQuickProvisionPassword("1234")
+        vm1.startQuickProvisionTap()
+
+        assertNotNull(vm1.quickProvision.value.nameError)
+        assertNotNull(vm1.quickProvision.value.ssidError)
+        assertNotNull(vm1.quickProvision.value.passwordError)
+        assertEquals(QuickProvisionStep.FORM, vm1.quickProvision.value.step)
+
+        // 2. Valid one-shot bind & provision
+        val uid1 = "1D:55:7A:D1:03:00:10"
+        vm1.updateQuickProvisionName("展厅迎宾屏")
+        vm1.updateQuickProvisionSsid("ist-network")
+        vm1.updateQuickProvisionPassword("12344321")
+        vm1.updateQuickProvisionFormat(NdefPayloadFormat.JSON)
+        vm1.startQuickProvisionTap()
+        assertEquals(QuickProvisionStep.WAITING_TAP, vm1.quickProvision.value.step)
+
+        val payload1 = com.example.model.PayloadBuilder.buildPayload(
+            format = NdefPayloadFormat.JSON,
+            ssid = "ist-network",
+            password = "12344321",
+            uid = uid1
+        )
+        val ndefBytes1 = android.nfc.NdefMessage(
+            arrayOf(android.nfc.NdefRecord.createTextRecord("en", payload1))
+        ).toByteArray()
+
+        vm1.onQuickProvisionWriteResult(
+            NfcWriteResult.Success(
+                uid = uid1,
+                payload = payload1,
+                ndefMessageBytes = ndefBytes1.size,
+                rawNdefBytes = ndefBytes1
+            )
+        )
+
+        assertEquals(QuickProvisionStep.SUCCESS, vm1.quickProvision.value.step)
+        assertEquals(1, vm1.devices.value.size)
+        val device1 = vm1.devices.value.first()
+        assertEquals("展厅迎宾屏", device1.name)
+        assertEquals(uid1, device1.uid)
+        assertEquals(ProvisionStatus.PROVISIONED, device1.status)
+        assertEquals("ist-network", device1.wifiSsid)
+        assertEquals("12344321", device1.wifiPassword)
+        assertTrue(!vm1.quickProvision.value.isExistingUpdated)
+
+        // Verify both READ_UID and WRITE_WIFI logs recorded
+        assertTrue(vm1.logs.value.any { it.type == NfcLogType.READ_UID && it.uid == uid1 })
+        assertTrue(vm1.logs.value.any { it.type == NfcLogType.WRITE_WIFI && it.uid == uid1 })
+
+        // 3. Batch continue preserves Wi-Fi & clears device name
+        vm1.continueNextQuickProvision()
+        assertEquals(QuickProvisionStep.FORM, vm1.quickProvision.value.step)
+        assertEquals("", vm1.quickProvision.value.deviceName)
+        assertEquals("ist-network", vm1.quickProvision.value.ssid)
+        assertEquals("12344321", vm1.quickProvision.value.password)
+
+        // 4. Duplicate UID blocked when overwriteExisting is false
+        vm1.updateQuickProvisionName("二号屏幕")
+        vm1.updateQuickProvisionOverwrite(false)
+        vm1.startQuickProvisionTap()
+        vm1.onQuickProvisionDuplicateBlocked(uid1, "展厅迎宾屏")
+        assertNotNull(vm1.quickProvision.value.writeError)
+        assertEquals(QuickProvisionStep.WAITING_TAP, vm1.quickProvision.value.step)
+
+        // 5. Overwrite existing UID succeeds when overwriteExisting is true
+        vm1.backToQuickProvisionForm()
+        vm1.updateQuickProvisionOverwrite(true)
+        vm1.updateQuickProvisionSsid("IST_5G")
+        vm1.updateQuickProvisionPassword("87654321")
+        vm1.startQuickProvisionTap()
+        val payload2 = com.example.model.PayloadBuilder.buildPayload(
+            format = NdefPayloadFormat.JSON,
+            ssid = "IST_5G",
+            password = "87654321",
+            uid = uid1
+        )
+        vm1.onQuickProvisionWriteResult(
+            NfcWriteResult.Success(
+                uid = uid1,
+                payload = payload2,
+                ndefMessageBytes = 80
+            )
+        )
+        assertEquals(QuickProvisionStep.SUCCESS, vm1.quickProvision.value.step)
+        assertTrue(vm1.quickProvision.value.isExistingUpdated)
+        assertEquals(1, vm1.devices.value.size)
+
+        // 6. Verify cold restart persistence
+        val vm2 = ProvisionerViewModel(ProvisioningRepository(context))
+        assertEquals(1, vm2.devices.value.size)
+        assertEquals("二号屏幕", vm2.devices.value.first().name)
+        assertEquals("IST_5G", vm2.devices.value.first().wifiSsid)
+        assertEquals(ProvisionStatus.PROVISIONED, vm2.devices.value.first().status)
     }
 }
